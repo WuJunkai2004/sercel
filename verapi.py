@@ -1,36 +1,48 @@
-from imp import load_source
-from http import server
+try:
+    from imp import load_source
+except ImportError:
+    from importlib.util import spec_from_file_location, module_from_spec
+    load_source = lambda name, path: module_from_spec(spec_from_file_location(name, path))
 
 import os
 import vercel
 
-def Start(handler = vercel.API, port = 8000):
-    server.test(
+def main(handler = vercel.API, port = 8000):
+    print("server start")
+    vercel.start(
         HandlerClass = handler,
-        ServerClass = server.ThreadingHTTPServer,
-        port = port,
-        bind = None
+        port = port
     )
+
 
 class handler(vercel.API):
     def vercel(self, url, data, headers):
-        print('url === ' + url)
         if(os.path.isdir(url)):
             self.send_code(200)
+            for home in ['index.html','index.htm']:
+                if(os.path.isfile(url + home)):
+                    self.send_file(url + home)
+                    return
             self.send_text( '\n'.join(os.listdir(url)) )
-        elif(os.path.isfile(url)):
+            return
+    
+        if(os.path.isfile(url)):
             if(os.path.splitext(url)[1]=='.py'):
-                vercel.ErrorStatu(self, 403)
-            else:
-                self.send_code(200)
-                self.send_file(url)
-        else:
-            if(os.path.isfile(url + '.py')):
-                mod = load_source(url,url + '.py')
-                mod.handler.vercel(self, url, data, headers)
+                return vercel.ErrorStatu(self, 403)
+            self.send_code(200)
+            self.send_file(url)
+            return
 
-            else:
-                vercel.ErrorStatu(self, 404)
+        if(os.path.isfile(url + '.py')):
+            mod = load_source(url,url + '.py')
+            try:
+                mod.handler.vercel(self, url, data, headers)
+            except AttributeError:
+                vercel.ErrorStatu(self, 503)
+            return
+        
+        vercel.ErrorStatu(self, 404)
+
 
 if(__name__=='__main__'):
-    Start( handler )
+    main( handler )

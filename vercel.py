@@ -7,6 +7,10 @@ import io
 import json
 import os
 import sys
+import ast
+import inspect
+import logging
+
 
 
 class ErrorStatu:
@@ -15,10 +19,11 @@ class ErrorStatu:
     .container { margin: 50px auto 40px auto; width: 600px; text-align: center; }
     h1 { width: 800px; position:relative; left: -100px; letter-spacing: -1px; line-height: 60px; font-size: 60px; font-weight: 100; margin: 0px 0 50px 0; text-shadow: 0 1px 0 #fff; }
     p { color: rgba(0, 0, 0, 0.5); margin: 20px 0; line-height: 1.6; }
-    </style></head><body><div class="container"><h1>%d</h1><p><strong>%s</strong></p></div></body></html>'''
-    def __init__(self, Handler ,code):
+    </style></head><body><div class="container"><h1>%d</h1><p><strong>%s</strong></p><p>%s</p></div></body></html>'''
+    def __init__(self, Handler, code, more = ''):
         '初始化异常项'
         self.handler = Handler
+        self.more = more
         self.Response(code)
 
     def Error(self, name):
@@ -37,9 +42,49 @@ class ErrorStatu:
     def Response(self, code):
         '发生异常页面'
         error = self.Statu(code)
-        doc = self.__doc__%(error, code, error)
+        doc = self.__doc__%(error, code, error, self.more)
         self.handler.send_response(code)
         self.handler.send_text(doc)
+
+
+
+class ServerLog:
+    def __init__(self, name = 'server'):
+        self.log = logging.getLogger(name)
+        self.log.setLevel(logging.DEBUG)
+
+        self.formatter = logging.Formatter('%(asctime)s | %(levelname)-7s | %(name)-10s | %(message)s', datefmt='%H:%M:%S')
+
+        self.file_handler = logging.FileHandler('server.log')
+        self.file_handler.setFormatter(self.formatter)
+        self.log.addHandler(self.file_handler)
+
+        self.cons_handler = logging.StreamHandler(sys.stdout)
+        self.cons_handler.setFormatter(self.formatter)
+        self.log.addHandler(self.cons_handler)
+
+        self.log.addFilter(self.center)
+
+    def name(self, name):
+        '设置日志名称'
+        self.log.name = name
+        return self
+    
+    def center(self, record):
+        '将levelname和name居中'
+        record.levelname = f"{record.levelname:^7}"
+        record.name = f"{record.name:^10}"
+        return True
+
+    def __call__(self, *values, sep = ' ', end = '\n', file = None, flush = False, level = logging.INFO):
+        if(type(values) == tuple):
+            values = sep.join(map(str, values))
+        if(type(values) == str):
+            values = values.encode('utf-8')
+        if(type(values) == bytes):
+            values = values.decode('utf-8')
+        self.log.log(level, values)
+verlog = ServerLog()
 
 
 
@@ -48,7 +93,8 @@ class URL(server.SimpleHTTPRequestHandler):
     def translate_path(self):
         '获取路径'
         dirname, filename = os.path.split( os.path.abspath( __file__ ) )
-        return dirname + self.path
+        path = self.path.split('?',1)[0]
+        return dirname + path
         
     def translate_args(self):
         '解析URL附带数据'
@@ -70,10 +116,14 @@ class URL(server.SimpleHTTPRequestHandler):
             else:
                 args[word[0]] = word[1]
         return args
+    
+    def log_message(self, format, *args):
+        message = format % args
+        verlog.name('server')(message)
 
 
 
-class DATA(server.SimpleHTTPRequestHandler):
+class DATA(URL):
     '数据处理'
     def parse_form(self, data):
         '解析 application/x-www-form-urlencoded 数据'
@@ -108,19 +158,68 @@ class DATA(server.SimpleHTTPRequestHandler):
         else:
             return xml.parsers(data)
 
-    def parse_data(self, data):
+    def parse_data(self, data: bytearray):
+        def bytesplit(data: bytes, sep: bytes):
+            '分割数据块'
+            start = 0
+            for cur in range(len(data) - len(sep) + 1):
+                if data[cur] == sep[0] and data[cur + 1] == sep[1] \
+                and data[cur:cur + len(sep)] == sep:
+                    yield data[start:cur]
+                    start = cur + len(sep)
+            yield data[start:]
+        def bytepack(data: bytearray):
+            '将字节打包成字典'
+            result = {
+                "Content-Disposition": "",
+                "name": "",
+                "filename": "",
+                "Content-Type": "",
+                "Content" : None    # io.BytesIO()
+            }
+            void_line = 0
+            data_start = 0
+            for item in bytesplit(data, b'\r\n'):
+                if void_line == 2:
+                    result["Content"] = io.BytesIO(data[data_start:])
+                    break
+                else:
+                    data_start += len(item) + 2
+                if item.startswith(b'Content-Disposition:'):
+                    attr = item.split(b';')
+                    result["Content-Disposition"] = attr[0]
+                    for i in range(1, len(attr)):
+                        attr[i] = attr[i].strip()
+                        if attr[i].startswith(b'name='):
+                            result["name"] = attr[i][6:-1]
+                        elif attr[i].startswith(b'filename='):
+                            result["filename"] = attr[i][10:-1].decode()
+                elif item.startswith(b'Content-Type:'):
+                    result["Content-Type"] = item[14:]
+                elif item == b'':
+                    void_line += 1
+            return result
+            
         '解析 multipart/form-data 数据'
-        data = data.decode()
-        boundary = data.split('\r\n')[0]
-        data = data.split('\r\n')[1:]
-        #list = re.split(boundary,data)
-        print('c=',data)
-        try:
-            print(data)
-        except:
-            ErrorStatu(self,415)
-            raise TypeError('415 Unsupported Media Type')
-        return data
+        # 获取 boundary
+        boundary = ''
+        for item in bytesplit(data, b'\r\n'):
+            if item.startswith(b'--'):
+                boundary = item
+                break
+        if not boundary:
+            # 如果没有找到 boundary，返回错误
+            ErrorStatu(self, 400, 'Bad Request')
+            return
+
+        # 分割数据块并解析
+        result = []
+        for part in bytesplit(data, boundary):
+            if len(part) <= 2 or part.startswith(b'--'):
+                continue
+            result.append(bytepack(part))
+        return result
+
 
 #============ data translate ============#
     def translate_post(self):
@@ -142,7 +241,7 @@ class DATA(server.SimpleHTTPRequestHandler):
                 return self.parse_data(data)
 
 
-class COOKIE(server.SimpleHTTPRequestHandler):
+class COOKIE(DATA):
 #============ cookie optional ============#
     def cookie_set(self, item, value):
         cookie = '{}={}aa=ss; Path=/'.format(item, value)
@@ -162,8 +261,8 @@ class COOKIE(server.SimpleHTTPRequestHandler):
 
 
 #============ response ============#
-class SEND(server.SimpleHTTPRequestHandler):
-    def send_file(self,path):
+class SEND(COOKIE):
+    def send_file(self, path):
         self.end_headers()
         try:
             f = open(path, 'rb')
@@ -171,8 +270,9 @@ class SEND(server.SimpleHTTPRequestHandler):
             raise IOError('404 Not Found')
         else:
             self.copyfile(f, self.wfile)
+            f.close()
 
-    def send_text(self,text):
+    def send_text(self, text):
         self.end_headers()
         enc = sys.getfilesystemencoding()
         encoded = text.encode(enc, 'surrogateescape')
@@ -180,8 +280,17 @@ class SEND(server.SimpleHTTPRequestHandler):
         f.write(encoded)
         f.seek(0)
         self.copyfile(f, self.wfile)
+        f.close()
 
-    def send_headers(self,headers):
+    def send_json(self, data: dict | list):
+        for header_str in self._headers_buffer:
+            if header_str.startswith(b'Content-Type:'):
+                self._headers_buffer.remove(header_str)
+                break
+        self.send_header('Content-Type', 'application/json')
+        self.send_text(json.dumps(data, ensure_ascii=False))
+
+    def send_headers(self, headers):
         for i in headers:
             self.send_header(i,headers[i])
     
@@ -189,16 +298,22 @@ class SEND(server.SimpleHTTPRequestHandler):
         self.send_response(code)
 
 
-class API(URL, DATA, COOKIE, SEND):
+class API(SEND):
     server_version = 'vercelHTTP/1.0'
     def do_GET(self):
+        self.method = 'GET'
         self.vercel(self.translate_path(), self.translate_args(), self.headers)
 
     def do_POST(self):
+        self.method = 'POST'
         self.vercel(self.translate_path(), self.translate_post(), self.headers)
 
     def do_HEAD(self):
+        self.method = 'HEAD'
         self.vercel(self.translate_path(), self.translate_post(), self.headers)
+
+    def do_CONNECT(self):
+        pass
 
     def do_OPTIONS(self):
         pass
@@ -212,6 +327,54 @@ class API(URL, DATA, COOKIE, SEND):
     def do_DELETE(self):
         pass
 
+
+class macro(ast.NodeTransformer):
+    def visit_FunctionDef(self, node):
+        node.name = 'main'
+        node.args.args = []
+        node.decorator_list = []
+        return node
+
+class register:
+    def __init__(self, func):
+        self.funname = func.__name__
+        self.globals = func.__globals__
+        self.macro(func)
+        self.globals['handler'] = self
+
+    def macro(self, func):
+        func = inspect.getsource(func)
+        func = ast.parse(func)
+        func = macro().visit(func)
+        func = ast.fix_missing_locations(func)
+        func = ast.unparse(func)
+        exec(func, self.globals)
+    
+    def vercel(self, response, url, data, headers):
+        self.globals['print'] = verlog.name(self.funname)
+        self.globals['response'] = response
+        self.globals['url'] = url
+        self.globals['data'] = data
+        self.globals['headers'] = headers
+        exec(self.globals['main'].__code__, self.globals)
+
+
+def start(HandlerClass = API,
+          ServerClass  = server.ThreadingHTTPServer,
+          protocol = "HTTP/1.0", port = 8000, bind = None):
+    import socket
+    info = socket.getaddrinfo(bind, port, 
+                               type  = socket.SOCK_STREAM,
+                               flags = socket.AI_PASSIVE)[0]
+    ServerClass.address_family = info[0]
+    HandlerClass.protocol_version = protocol
+    with ServerClass(info[4], HandlerClass) as httpd:
+        try:
+            httpd.serve_forever()
+        except KeyboardInterrupt:
+            sys.exit(0)
+
+ 
 
 '''HTTP/1.1协议中共定义了八种方法（有时也叫“动作”）来表明Request-URI指定的资源的不同操作方式：
 . OPTIONS - 返回服务器针对特定资源所支持的HTTP请求方法。
