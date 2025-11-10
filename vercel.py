@@ -10,6 +10,7 @@ import sys
 import ast
 import inspect
 import logging
+import threading
 
 
 
@@ -69,7 +70,7 @@ class ServerLog:
         '设置日志名称'
         self.log.name = name
         return self
-    
+
     def center(self, record):
         '将levelname和name居中'
         record.levelname = f"{record.levelname:^7}"
@@ -92,10 +93,10 @@ class URL(server.SimpleHTTPRequestHandler):
     'URL处理'
     def translate_path(self):
         '获取路径'
-        dirname, filename = os.path.split( os.path.abspath( __file__ ) )
+        dirname = os.path.abspath( os.getcwd() )
         path = self.path.split('?',1)[0]
         return dirname + path
-        
+
     def translate_args(self):
         '解析URL附带数据'
         path = self.path
@@ -116,7 +117,7 @@ class URL(server.SimpleHTTPRequestHandler):
             else:
                 args[word[0]] = word[1]
         return args
-    
+
     def log_message(self, format, *args):
         message = format % args
         verlog.name('server')(message)
@@ -157,6 +158,15 @@ class DATA(URL):
             raise TypeError('415 Unsupported Media Type')
         else:
             return xml.parsers(data)
+        
+    def parse_text(self, data):
+        if(type(data) == str):
+            data = data.encode('utf-8')
+        if(type(data) == bytes):
+            data = data.decode('utf-8')
+        return {
+            'raw': data
+        }
 
     def parse_data(self, data: bytearray):
         def bytesplit(data: bytes, sep: bytes):
@@ -199,7 +209,7 @@ class DATA(URL):
                 elif item == b'':
                     void_line += 1
             return result
-            
+
         '解析 multipart/form-data 数据'
         # 获取 boundary
         boundary = ''
@@ -239,6 +249,8 @@ class DATA(URL):
                 return self.parse_xml(data)
             elif(method == 'multipart/form-data'):
                 return self.parse_data(data)
+            elif(method == 'text/plain'):
+                return self.parse_text(data)
 
 
 class COOKIE(DATA):
@@ -283,6 +295,8 @@ class SEND(COOKIE):
         f.close()
 
     def send_json(self, data: dict | list):
+        if not hasattr(self, '_headers_buffer'):
+            self._headers_buffer = []
         for header_str in self._headers_buffer:
             if header_str.startswith(b'Content-Type:'):
                 self._headers_buffer.remove(header_str)
@@ -293,7 +307,7 @@ class SEND(COOKIE):
     def send_headers(self, headers):
         for i in headers:
             self.send_header(i,headers[i])
-    
+
     def send_code(self,code):
         self.send_response(code)
 
@@ -328,35 +342,47 @@ class API(SEND):
         pass
 
 
-class macro(ast.NodeTransformer):
-    def visit_FunctionDef(self, node):
-        node.name = 'main'
-        node.args.args = []
-        node.decorator_list = []
-        return node
-
 class register:
     def __init__(self, func):
-        self.funname = func.__name__
-        self.globals = func.__globals__
-        self.macro(func)
-        self.globals['handler'] = self
+        self.func = func
+        self.func_args_names = inspect.getfullargspec(func).args
+        self.func.__globals__['handler'] = self
 
-    def macro(self, func):
-        func = inspect.getsource(func)
-        func = ast.parse(func)
-        func = macro().visit(func)
-        func = ast.fix_missing_locations(func)
-        func = ast.unparse(func)
-        exec(func, self.globals)
-    
     def vercel(self, response, url, data, headers):
-        self.globals['print'] = verlog.name(self.funname)
-        self.globals['response'] = response
-        self.globals['url'] = url
-        self.globals['data'] = data
-        self.globals['headers'] = headers
-        exec(self.globals['main'].__code__, self.globals)
+        log_printer = verlog.name(self.func.__name__)
+        available_content = {
+            'response': response,
+            'url': url,
+            'data': data,
+            'headers': headers
+        }
+        kwargs = {}
+        for name in self.func_args_names:
+            if name in available_content:
+                kwargs[name] = available_content[name]
+            else:
+                raise RuntimeWarning(f"Unsupport argument {name}, please check your function definition.")
+        try:
+            self.func.__globals__['print'] = log_printer
+            self.func(**kwargs)
+        except TypeError as e:
+            log_printer(f"RuntimeError: {e}", level = logging.ERROR)
+            ErrorStatu(self, 500, 'Internal Server Error')
+
+
+class daemon:
+    def __init__(self, func):
+        self.func = func
+        self.thread = None
+
+    def __call__(self, *args, **kwargs):
+        """Call to the function"""
+        if self.thread is None or not self.thread.is_alive():
+            self.thread = threading.Thread(target=self.func, args=args, kwargs=kwargs)
+            self.thread.daemon = True
+            self.thread.start()
+        else:
+            verlog.name('daemon')(f"Thread {self.thread.name} is already running.", level=logging.WARNING)
 
 
 def start(HandlerClass = API,
@@ -369,12 +395,13 @@ def start(HandlerClass = API,
     ServerClass.address_family = info[0]
     HandlerClass.protocol_version = protocol
     with ServerClass(info[4], HandlerClass) as httpd:
+        verlog.name('start')(f"Serving HTTP on {info[4][0]} port {port}")
         try:
             httpd.serve_forever()
         except KeyboardInterrupt:
             sys.exit(0)
 
- 
+
 
 '''HTTP/1.1协议中共定义了八种方法（有时也叫“动作”）来表明Request-URI指定的资源的不同操作方式：
 . OPTIONS - 返回服务器针对特定资源所支持的HTTP请求方法。

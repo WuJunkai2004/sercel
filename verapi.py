@@ -2,18 +2,23 @@ try:
     from imp import load_source
 except ImportError:
     from importlib.util import spec_from_file_location, module_from_spec
-    load_source = lambda name, path: module_from_spec(spec_from_file_location(name, path))
+    load_source = lambda name, path: (
+        (s := spec_from_file_location(name, path)) and
+        (m := module_from_spec(s)) and
+        (s.loader.exec_module(m) is None and m)
+    )
 
 import os
-import vercel
+from . import vercel
+
+# 模块缓存字典
+_module_cache = {}
 
 def main(handler = vercel.API, port = 8000):
-    print("server start")
     vercel.start(
         HandlerClass = handler,
         port = port
     )
-
 
 class handler(vercel.API):
     def vercel(self, url, data, headers):
@@ -25,7 +30,7 @@ class handler(vercel.API):
                     return
             self.send_text( '\n'.join(os.listdir(url)) )
             return
-    
+
         if(os.path.isfile(url)):
             if(os.path.splitext(url)[1]=='.py'):
                 return vercel.ErrorStatu(self, 403)
@@ -34,13 +39,32 @@ class handler(vercel.API):
             return
 
         if(os.path.isfile(url + '.py')):
-            mod = load_source(url,url + '.py')
-            try:
-                mod.handler.vercel(self, url, data, headers)
-            except AttributeError:
-                vercel.ErrorStatu(self, 503)
+            mod = _module_cache.get(url)
+
+            if not mod:
+                try:
+                    mod = load_source(url, url + '.py')
+                    _module_cache[url] = mod
+                except Exception as e:
+                    if url in _module_cache:
+                        del _module_cache[url]
+                    vercel.verlog(f"Error loading module {url}: {e}")
+                    return vercel.ErrorStatu(self, 500)
+
+            if mod:
+                mod_handler = getattr(mod, 'handler', None)
+                if mod_handler is None:
+                    return vercel.ErrorStatu(self, 503, 'Failed to load handler from module')
+                vercel_func = getattr(mod_handler, 'vercel', None)
+                if vercel_func is None:
+                    return vercel.ErrorStatu(self, 503, 'Handler has no vercel method')
+                try:
+                    vercel_func(self, url, data, headers)
+                except Exception as e:
+                    print(e)
+                    return vercel.ErrorStatu(self, 503)
             return
-        
+
         vercel.ErrorStatu(self, 404)
 
 
