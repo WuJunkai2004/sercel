@@ -34,3 +34,11 @@ def auto_content_type(cls):
     cls.send_json = enhanced_send_json
 
     return cls
+
+
+def hot_reload(cls):
+    """
+    为API类启用热重载功能的装饰器
+    """
+    cls.hot_reload = True
+    return cls

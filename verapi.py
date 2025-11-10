@@ -1,18 +1,6 @@
-try:
-    from imp import load_source
-except ImportError:
-    from importlib.util import spec_from_file_location, module_from_spec
-    load_source = lambda name, path: (
-        (s := spec_from_file_location(name, path)) and
-        (m := module_from_spec(s)) and
-        (s.loader.exec_module(m) is None and m)
-    )
-
 import os
 from . import vercel
 
-# 模块缓存字典
-_module_cache = {}
 
 def main(handler = vercel.API, port = 8000):
     vercel.start(
@@ -39,22 +27,8 @@ class handler(vercel.API):
             return
 
         if(os.path.isfile(url + '.py')):
-            mod = _module_cache.get(url)
-
-            if not mod:
-                try:
-                    mod = load_source(url, url + '.py')
-                    _module_cache[url] = mod
-                except Exception as e:
-                    if url in _module_cache:
-                        del _module_cache[url]
-                    vercel.verlog(f"Error loading module {url}: {e}")
-                    return vercel.ErrorStatu(self, 500)
-
-            if mod:
-                mod_handler = getattr(mod, 'handler', None)
-                if mod_handler is None:
-                    return vercel.ErrorStatu(self, 503, 'Failed to load handler from module')
+            mod_handler = vercel.load_handler(url, url + '.py')
+            if mod_handler:
                 vercel_func = getattr(mod_handler, 'vercel', None)
                 if vercel_func is None:
                     return vercel.ErrorStatu(self, 503, 'Handler has no vercel method')
@@ -63,7 +37,7 @@ class handler(vercel.API):
                 except Exception as e:
                     print(e)
                     return vercel.ErrorStatu(self, 503)
-            return
+                return
 
         vercel.ErrorStatu(self, 404)
 

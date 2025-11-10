@@ -7,11 +7,19 @@ import io
 import json
 import os
 import sys
-import ast
 import inspect
 import logging
 import threading
 
+try:
+    from imp import load_source
+except ImportError:
+    from importlib.util import spec_from_file_location, module_from_spec
+    load_source = lambda name, path: (
+        (s := spec_from_file_location(name, path)) and
+        (m := module_from_spec(s)) and
+        (s.loader.exec_module(m) is None and m)
+    )
 
 
 class ErrorStatu:
@@ -46,7 +54,6 @@ class ErrorStatu:
         doc = self.__doc__%(error, code, error, self.more)
         self.handler.send_response(code)
         self.handler.send_text(doc)
-
 
 
 class ServerLog:
@@ -88,7 +95,6 @@ class ServerLog:
 verlog = ServerLog()
 
 
-
 class URL(server.SimpleHTTPRequestHandler):
     'URL处理'
     def translate_path(self):
@@ -121,7 +127,6 @@ class URL(server.SimpleHTTPRequestHandler):
     def log_message(self, format, *args):
         message = format % args
         verlog.name('server')(message)
-
 
 
 class DATA(URL):
@@ -401,6 +406,23 @@ def start(HandlerClass = API,
         except KeyboardInterrupt:
             sys.exit(0)
 
+
+__module_cache = {}
+def load_handler(name, path):
+    if name in __module_cache:
+        return getattr(__module_cache[name], 'handler', None)
+    try:
+        mod = load_source(name, path)
+    except Exception as e:
+        verlog.name('load_handler')(f"Error loading module {name}: {e}", level=logging.ERROR)
+        return None
+    mod_handler = getattr(mod, 'handler', None)
+    if mod_handler is None:
+        verlog.name('load_handler')(f"Failed to load handler from module {name}", level=logging.ERROR)
+        return None
+    if hasattr(mod_handler, 'hot_reload'):
+        __module_cache[name] = mod
+    return mod_handler
 
 
 '''HTTP/1.1协议中共定义了八种方法（有时也叫“动作”）来表明Request-URI指定的资源的不同操作方式：
