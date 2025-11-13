@@ -420,7 +420,7 @@ def load_handler(name, path):
     if mod_handler is None:
         verlog.name('load_handler')(f"Failed to load handler from module {name}", level=logging.ERROR)
         return None
-    if hasattr(mod_handler, 'hot_reload'):
+    if not hasattr(mod_handler, 'hot_reload'):
         __module_cache[name] = mod
     return mod_handler
 
