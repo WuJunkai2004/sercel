@@ -299,7 +299,7 @@ class SEND(COOKIE):
         self.copyfile(f, self.wfile)
         f.close()
 
-    def send_json(self, data: dict | list):
+    def send_json(self, data: dict):
         if not hasattr(self, '_headers_buffer'):
             self._headers_buffer = []
         for header_str in self._headers_buffer:
