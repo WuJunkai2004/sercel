@@ -35,8 +35,9 @@ class handler(vercel.API):
                 try:
                     vercel_func(self, url, data, headers)
                 except Exception as e:
-                    print(e)
-                    return vercel.ErrorStatu(self, 503)
+                    vercel.verlog.name("router")(f"Error in handler {url + '.py'}")
+                    vercel.verlog.name("router")(f"  {e}")
+                    return vercel.ErrorStatu(self, 503, str(e))
                 return
 
         vercel.ErrorStatu(self, 404)

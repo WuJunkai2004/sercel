@@ -332,19 +332,24 @@ class API(SEND):
         self.vercel(self.translate_path(), self.translate_post(), self.headers)
 
     def do_CONNECT(self):
-        pass
+        self.method = 'CONNECT'
+        self.vercel(self.translate_path(), self.translate_post(), self.headers)
 
     def do_OPTIONS(self):
-        pass
+        self.method = 'OPTIONS'
+        self.vercel(self.translate_path(), self.translate_post(), self.headers)
 
     def do_FATCH(self):
-        pass
+        self.method = 'FATCH'
+        self.vercel(self.translate_path(), self.translate_post(), self.headers)
 
     def do_PUT(self):
-        pass
+        self.method = 'PUT'
+        self.vercel(self.translate_path(), self.translate_post(), self.headers)
 
     def do_DELETE(self):
-        pass
+        self.method = 'DELETE'
+        self.vercel(self.translate_path(), self.translate_post(), self.headers)
 
 
 class register:
@@ -373,21 +378,6 @@ class register:
         except TypeError as e:
             log_printer(f"RuntimeError: {e}", level = logging.ERROR)
             ErrorStatu(self, 500, 'Internal Server Error')
-
-
-class daemon:
-    def __init__(self, func):
-        self.func = func
-        self.thread = None
-
-    def __call__(self, *args, **kwargs):
-        """Call to the function"""
-        if self.thread is None or not self.thread.is_alive():
-            self.thread = threading.Thread(target=self.func, args=args, kwargs=kwargs)
-            self.thread.daemon = True
-            self.thread.start()
-        else:
-            verlog.name('daemon')(f"Thread {self.thread.name} is already running.", level=logging.WARNING)
 
 
 def start(HandlerClass = API,
